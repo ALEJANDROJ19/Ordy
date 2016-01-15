@@ -16,67 +16,60 @@ server(Master, MaxPrp, MaxAgr, Nodes, Cast, Queue, Jitter) ->
 receive
     {send, Msg} ->
         Ref = make_ref(),
-        request(... , ... , ... , ...),
-        NewCast = cast(... , ... , ...),
-        server(... , ... , ... , ... , ... , ... , ...);
+        request(Ref, Msg, Nodes, Jitter),
+        NewCast = cast(Ref, Nodes, Cast),
+        server(Master, MaxPrp, MaxAgr, Nodes, NewCast, Queue, Jitter);
     {request, From, Ref, Msg} ->
-        NewMaxPrp = ... ,
-        From ! {proposal, ... , ...},
-        NewQueue = insert(... , ... , ... , ...),
-        server(... , ... , ... , ... , ... , ... , ...);
+        NewMaxPrp = seq:increment(seq:max(MaxPrp, MaxAgr)),
+        From ! {proposal, Ref , NewMaxPrp},
+        NewQueue = insert(Ref, Msg, NewMaxPrp, Queue),
+        server(Master, NewMaxPrp, MaxAgr, Nodes, Cast, NewQueue, Jitter);
     {proposal, Ref, Proposal} ->
-        case proposal(... , ... , ...) of
+        case proposal(Ref, Proposal, Cast) of
             {agreed, MaxSeq, NewCast} ->
-                agree(... , ... , ...),
-                server(... , ... , ... , ... , ... , ... , ...);
+                agree(Ref, MaxSeq, Nodes),
+                server(Master, MaxPrp, MaxSeq, Nodes, NewCast, Queue, Jitter);
             NewCast ->
-                server(... , ... , ... , ... , ... , ... , ...)
+                server(Master, MaxPrp, MaxAgr, Nodes, NewCast, Queue, Jitter)
         end;
     {agreed, Ref, Seq} ->
-        Updated = update(... , ... , ...),
-        {Agreed, NewQueue} = agreed(...),
-        deliver(... , ...),
-        NewMaxAgr = ... ,
-        server(... , ... , ... , ... , ... , ... , ...);
+        Updated = update(Ref, Seq, Queue),
+        {Agreed, NewQueue} = agreed(Updated),
+        deliver(Master, Agreed),
+        NewMaxAgr = seq:max(Seq,MaxAgr),
+        server(Master, MaxPrp, NewMaxAgr, Nodes, Cast, NewQueue, Jitter);
     stop ->
         ok
 end.
 
-%% Sending a request message to all nodes
 request(Ref, Msg, Nodes, 0) ->
     Self = self(),
     lists:foreach(fun(Node) -> 
-                      %% TODO: ADD SOME CODE
+                      Node ! {request, Self, Ref, Msg}
                   end, 
                   Nodes);
 request(Ref, Msg, Nodes, Jitter) ->
     Self = self(),
     lists:foreach(fun(Node) ->
                       T = random:uniform(Jitter),
-                      timer:send_after(T, Node, ... ) %% TODO: COMPLETE
-                  end,
+                      timer:send_after(T, Node, {request, Self, Ref, Msg})end,
                   Nodes).
         
-%% Sending an agreed message to all nodes
 agree(Ref, Seq, Nodes)->
     lists:foreach(fun(Pid)-> 
-                      %% TODO: ADD SOME CODE
-                  end, 
+					  Pid ! {agreed, Ref, Seq}         end, 
                   Nodes).
 
-%% Delivering messages to the master
 deliver(Master, Messages) ->
     lists:foreach(fun(Msg)-> 
                       Master ! {deliver, Msg} 
                   end, 
                   Messages).
                   
-%% Adding a new entry to the set of casted messages
 cast(Ref, Nodes, Cast) ->
     L = length(Nodes),
     [{Ref, L, seq:null()}|Cast].
 
-%% Update the set of casted messages
 proposal(Ref, Proposal, [{Ref, 1, Sofar}|Rest])->
     {agreed, seq:max(Proposal, Sofar), Rest};
 proposal(Ref, Proposal, [{Ref, N, Sofar}|Rest])->
@@ -89,24 +82,20 @@ proposal(Ref, Proposal, [Entry|Rest])->
             [Entry|Updated]
     end.
     
-%% Remove all messages in the front of the queue that have been agreed
 agreed([{_Ref, Msg, agrd, _Agr}|Queue]) ->
     {Agreed, Rest} = agreed(Queue),
     {[Msg|Agreed], Rest};
 agreed(Queue) ->
     {[], Queue}.
     
-%% Update the queue with an agreed sequence number
 update(Ref, Agreed, [{Ref, Msg, propsd, _}|Rest])->
     queue(Ref, Msg, agrd, Agreed, Rest);
 update(Ref, Agreed, [Entry|Rest])->
     [Entry|update(Ref, Agreed, Rest)].
     
-%% Insert a new message into the queue
 insert(Ref, Msg, Proposal, Queue) ->
     queue(Ref, Msg, propsd, Proposal, Queue).
     
-%% Queue a new entry
 queue(Ref, Msg, State, Proposal, []) ->
     [{Ref, Msg, State, Proposal}];
 queue(Ref, Msg, State, Proposal, Queue) ->
